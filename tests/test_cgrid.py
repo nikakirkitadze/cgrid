@@ -209,6 +209,14 @@ def test_tmux_conf(home, monkeypatch):
     assert "RGB" in conf
 
 
+def test_tree_usage_sums_a_pane_and_its_descendants():
+    usage = {10: (1024, 1.0), 11: (2048, 50.0), 12: (512, 0.5), 99: (9999, 9.0)}
+    children = {10: [11], 11: [12], 1: [10, 99]}
+    mb, cpu, count = cgrid.tree_usage(10, usage, children)
+    assert (round(mb, 1), cpu, count) == (3.5, 51.5, 3)
+    assert cgrid.fmt_mb(3.5) == "4 MB" and cgrid.fmt_mb(2048) == "2.0 GB"
+
+
 def test_window_backend(monkeypatch):
     assert cgrid.window_backend({"terminal": "iterm"}) == "iterm"
     monkeypatch.setattr(cgrid, "IS_MAC", False)
@@ -379,6 +387,8 @@ def test_grid_end_to_end(home, tmp_path):
         )
         assert line and f"cwd={web}" in line and "--dangerously-skip-permissions" in line
         assert (tmp_path / "cache" / "run" / "grid-1" / "claim-2").read_text() == web
+        # the idle picker in pane 1 notices the claim without a keypress
+        assert wait_for(lambda: "◉2" in tmux("capture-pane", "-p", "-t", "grid-1.1"), timeout=5)
         assert wait_for(lambda: "acme-web" in tmux("list-panes", "-s", "-t", "grid-1", "-F", "#{@proj}"))
     finally:
         subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)

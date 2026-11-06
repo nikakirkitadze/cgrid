@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `cgrid ls` shows memory, CPU and process count for every pane, per grid and in total.
+- README section on performance, with measurements.
+
+### Changed
+
+- Idle pickers redraw only when something changes and wake once a second instead of about three
+  times. Idle CPU fell from about 0.3% to about 0.006% per picker.
+- Claims are written by rename, so other panes never read a half-written claim.
+
 ## [0.1.0] - 2026-11-06
 
 ### Added

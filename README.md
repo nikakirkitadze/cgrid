@@ -75,7 +75,7 @@ cgrid --here                 # use this terminal window instead of opening a new
 
 cgrid pick                   # the picker on its own, in this terminal
 cgrid top                    # print the ranking with suggested modes and last prompts
-cgrid ls                     # running grids and what each pane is doing
+cgrid ls                     # running grids: each pane's project, mode, memory, CPU and process count
 cgrid attach [grid]          # reattach a grid (they keep running when the window closes)
 cgrid kill [grid | --all]    # end a grid and its sessions
 cgrid config                 # write and show the config file
@@ -147,6 +147,40 @@ folders, best first, with a short reason for each pick. The pickers work immedia
 re-rank when the answer arrives, typically after 10–40 seconds. The call goes through your own
 Claude Code login, loads no tools or MCP servers, and saves no session. A typical call costs a few
 cents of API usage, or uses your plan's usage.
+
+## Performance
+
+**Context doesn't add up across panes.** Each pane runs its own `claude` process with its own
+conversation and context window. Nothing is shared between panes, and six panes don't make any one
+session's context bigger.
+
+**The grid itself costs almost nothing.** Measured on an M-series MacBook with six live sessions:
+
+| Part | Memory | CPU |
+| --- | --- | --- |
+| tmux server for the whole grid | ~4 MB | < 0.5% |
+| a picker waiting for input | ~10 MB | ~0.01% (redraws only when something changes) |
+| cgrid after you pick a folder | none: the picker process is replaced by `claude` | none |
+| one Claude Code session | ~100–450 MB, plus whatever it runs | ~0% idle, more while working |
+| its stdio MCP servers | ~65 MB for six servers, started separately by **every** session | ~0% idle |
+
+So six panes cost the same as six terminal tabs running `claude`. `cgrid ls` shows the live numbers
+for each pane, including MCP servers and the builds or tests Claude starts.
+
+Launching six panes at once (`--top`, `--last`) is fine as it is. In the same test, one session's
+MCP servers were ready in about 1 s and six sessions' worth in under 3 s, so starting the panes one
+after another would only delay the last one.
+
+What actually limits parallel work:
+
+- **Usage limits are shared.** Six busy sessions use your plan or API quota about six times as fast
+  as one.
+- **MCP servers start once per session.** Servers you added at user scope (`claude mcp add -s user`)
+  start in every pane. Add heavy ones at local or project scope (`-s local`, `-s project`) so they
+  only start in the folders that need them.
+- **`--continue` resumes the whole previous conversation.** That's what you want for unfinished
+  work, but a fresh session starts with a much smaller context. Use `/context` inside a pane to see
+  what a session is carrying.
 
 ## Where the grid opens
 

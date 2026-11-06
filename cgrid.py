@@ -482,30 +482,50 @@ class Picker:
         self.ai_picks: list = []
         self.tick = 0
         self.items: list = []
+        self.grid_stamp = None
+        self.view_key = None
 
     # -- state
 
-    def poll(self) -> None:
-        self.tick += 1
+    def poll(self) -> bool:
+        """Pick up claims and AI results from other panes; True when the screen needs a redraw."""
+        changed = False
         if self.grid_dir:
-            claims = {}
             try:
-                for f in self.grid_dir.glob("claim-*"):
-                    n = f.name.split("-", 1)[1]
-                    if str(n) != str(self.pane):
-                        claims.setdefault(f.read_text().strip(), n)
+                stamp = self.grid_dir.stat().st_mtime_ns  # claims and ai.json land by rename, which bumps this
             except OSError:
-                pass
-            self.claims = claims
-            if self.ai_state == "pending":
-                ai = read_json(self.grid_dir / "ai.json")
-                if ai is not None:
-                    self.ai_picks = ai.get("picks") or []
-                    self.ai_state = "ready" if self.ai_picks else "failed"
-        self.items = self.visible()
-        if not self.touched:
-            self.sel = self.default_sel()
-        self.sel = max(0, min(self.sel, len(self.items) - 1))
+                stamp = None
+            if stamp != self.grid_stamp:
+                self.grid_stamp = stamp
+                self.reload_grid_state()
+                changed = True
+        key = (self.query, tuple(sorted(self.claims.items())), self.ai_state)
+        if key != self.view_key:
+            self.view_key = key
+            self.items = self.visible()
+            changed = True
+        sel = self.default_sel() if not self.touched else self.sel
+        sel = max(0, min(sel, len(self.items) - 1))
+        changed = changed or sel != self.sel
+        self.sel = sel
+        return changed
+
+    def reload_grid_state(self) -> None:
+        claims = {}
+        try:
+            for f in self.grid_dir.glob("claim-*"):
+                n = f.name.split("-", 1)[1]
+                path = f.read_text().strip()
+                if path and str(n) != str(self.pane):
+                    claims.setdefault(path, n)
+        except OSError:
+            pass
+        self.claims = claims
+        if self.ai_state == "pending":
+            ai = read_json(self.grid_dir / "ai.json")
+            if ai is not None:
+                self.ai_picks = ai.get("picks") or []
+                self.ai_state = "ready" if self.ai_picks else "failed"
 
     def ranked(self) -> list:
         if not self.projects:  # no Claude history yet: offer recently touched folders
@@ -787,19 +807,26 @@ class Picker:
         return ("launch", it, self.mode_for(it), self.cont)
 
     def run(self):
-        self.scr.timeout(350)
+        dirty = True
         while True:
-            self.poll()
-            self.draw()
+            if self.poll() or dirty:
+                self.draw()
+                dirty = False
+            # idle pickers wake once a second; only the AI spinner needs a faster tick
+            self.scr.timeout(250 if self.ai_state == "pending" else 1000)
             try:
                 ch = self.scr.get_wch()
             except curses.error:
+                if self.ai_state == "pending":
+                    self.tick += 1
+                    dirty = True
                 continue
             except KeyboardInterrupt:
                 ch = "\x03"
             result = self.handle(ch)
             if result:
                 return result
+            dirty = True
 
 
 def run_picker(ctx: dict):
@@ -890,8 +917,10 @@ def exec_claude(ctx: dict, path: str, mode: str, cont: bool) -> None:
     cfg = ctx["cfg"]
     name = display_name(path)
     if ctx.get("grid_dir") and ctx.get("pane"):
-        try:
-            (ctx["grid_dir"] / f"claim-{ctx['pane']}").write_text(path)
+        try:  # write then rename, so other panes never read a half-written claim
+            tmp = ctx["grid_dir"] / f".claim-{ctx['pane']}.tmp"
+            tmp.write_text(path)
+            os.replace(tmp, ctx["grid_dir"] / f"claim-{ctx['pane']}")
         except OSError:
             pass
     set_pane(proj=name, mode=MODES[mode][0])
@@ -1385,21 +1414,73 @@ def cmd_top(args, cfg: dict) -> None:
     print(f"\033[2m  usual mode overall: {MODES[index['global_mode']][0]}\033[0m")
 
 
+def process_table() -> tuple:
+    """pid -> (rss KB, cpu %) and ppid -> [child pids], from one `ps` call."""
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss=,pcpu="], capture_output=True, text=True).stdout
+    usage, children = {}, {}
+    for line in out.splitlines():
+        try:
+            pid, ppid, rss, cpu = line.split()[:4]
+            usage[int(pid)] = (int(rss), float(cpu))
+            children.setdefault(int(ppid), []).append(int(pid))
+        except ValueError:
+            continue
+    return usage, children
+
+
+def tree_usage(pid: int, usage: dict, children: dict) -> tuple:
+    """Memory (MB), CPU % and process count of a pane: the shell, claude, and its MCP servers and tools."""
+    mb = cpu = 0.0
+    count = 0
+    stack = [pid]
+    while stack:
+        p = stack.pop()
+        if p in usage:
+            mb += usage[p][0] / 1024
+            cpu += usage[p][1]
+            count += 1
+        stack.extend(children.get(p, []))
+    return mb, cpu, count
+
+
+def fmt_mb(mb: float) -> str:
+    return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb:.0f} MB"
+
+
 def cmd_ls(args, cfg: dict) -> None:
     grids = grid_sessions()
     if not grids:
         print("no grids running")
         return
+    usage, children = process_table()
+    total_mb = total_cpu = 0.0
+    sessions = 0
     for g in grids:
         info = tmux("display-message", "-p", "-t", g, "#{session_attached} #{session_created}", check=False).split()
         attached = info and info[0] != "0"
         created = ago(float(info[1])) if len(info) > 1 else ""
         started = "just now" if created == "now" else f"{created} ago"
-        print(f"\033[1m{g}\033[0m  {'attached' if attached else 'detached'} · started {started}")
-        panes = tmux("list-panes", "-s", "-t", g, "-F", "#{@n}\t#{@proj}\t#{@mode}", check=False)
+        rows = []
+        panes = tmux("list-panes", "-s", "-t", g, "-F", "#{@n}\t#{@proj}\t#{@mode}\t#{pane_pid}", check=False)
         for line in panes.splitlines():
-            num, proj, mode = (line.split("\t") + ["", "", ""])[:3]
-            print(f"   {num or '·':>2}  {proj or 'choosing…':<24} \033[2m{mode}\033[0m")
+            num, proj, mode, pid = (line.split("\t") + ["", "", "", ""])[:4]
+            mb, cpu, count = tree_usage(int(pid), usage, children) if pid.isdigit() else (0.0, 0.0, 0)
+            rows.append((num, proj, mode, mb, cpu, count))
+        grid_mb = sum(r[3] for r in rows)
+        grid_cpu = sum(r[4] for r in rows)
+        claude_panes = sum(1 for r in rows if r[1] and r[1] != "shell")
+        total_mb, total_cpu, sessions = total_mb + grid_mb, total_cpu + grid_cpu, sessions + claude_panes
+        print(
+            f"\033[1m{g}\033[0m  {'attached' if attached else 'detached'} · started {started}"
+            f"\033[2m · {fmt_mb(grid_mb)} · {grid_cpu:.0f}% cpu\033[0m"
+        )
+        for num, proj, mode, mb, cpu, count in rows:
+            print(
+                f"   {num or '·':>2}  {pad(proj or 'choosing…', 22)} {pad(mode, 14)}"
+                f"\033[2m{fmt_mb(mb):>8} {cpu:5.1f}%  {count:>2} proc{'' if count == 1 else 's'}\033[0m"
+            )
+    if len(grids) > 1 or sessions:
+        print(f"\033[2mtotal: {sessions} claude sessions · {fmt_mb(total_mb)} · {total_cpu:.0f}% cpu\033[0m")
 
 
 def cmd_attach(args, cfg: dict) -> None:
