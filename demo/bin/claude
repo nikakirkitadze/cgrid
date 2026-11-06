@@ -1,0 +1,4 @@
+#!/bin/sh
+# Demo stand-in for Claude Code, so the recording needs no account and creates no sessions.
+printf '\033[2m  (demo stub: Claude Code would start here)\033[0m\n'
+exec sleep 3600
