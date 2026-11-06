@@ -8,6 +8,7 @@ pick one, `claude` starts there with the permission mode you usually use in that
 
 ![cgrid demo: six panes, each picking a project and starting Claude Code](https://raw.githubusercontent.com/nikakirkitadze/cgrid/main/docs/demo.gif)
 
+[![PyPI](https://img.shields.io/pypi/v/cgrid)](https://pypi.org/project/cgrid/)
 [![CI](https://github.com/nikakirkitadze/cgrid/actions/workflows/ci.yml/badge.svg)](https://github.com/nikakirkitadze/cgrid/actions/workflows/ci.yml)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776ab)
 ![macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
@@ -45,14 +46,17 @@ You need macOS or Linux, Python 3.9+ (the macOS system `python3` works), tmux, a
 
 ```sh
 # with uv
-uv tool install git+https://github.com/nikakirkitadze/cgrid
+uv tool install cgrid
 
 # or with pipx
-pipx install git+https://github.com/nikakirkitadze/cgrid
+pipx install cgrid
 
 # or as a single file in ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/nikakirkitadze/cgrid/main/install.sh | sh
 ```
+
+To get the latest unreleased code, use `uv tool install git+https://github.com/nikakirkitadze/cgrid`.
+Upgrade with `uv tool upgrade cgrid` or `pipx upgrade cgrid`.
 
 Then install tmux if you don't have it (`brew install tmux`, or `sudo apt install tmux`), and check
 your setup:
